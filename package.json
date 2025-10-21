@@ -1,12 +1,13 @@
 {
-  "name": "welcome-bot",
+  "name": "revengers",
   "version": "1.0.0",
-  "description": "نظام ترحيب متكامل للديسكورد",
+  "description": "Revengers",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "discord.js": "^14.23.2"
+    "discord.js": "^14.23.2",
+    "dotenv": "^16.0.3"
   }
 }
