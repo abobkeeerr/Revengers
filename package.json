@@ -1,13 +1,12 @@
 {
-  "name": "revengers",
+  "name": "my-discord-bot",
   "version": "1.0.0",
-  "description": "Revengers",
+  "description": "Discord bot running on Railway",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "discord.js": "^14.23.2",
-    "dotenv": "^16.0.3"
+    "discord.js": "^14.19.3"
   }
 }

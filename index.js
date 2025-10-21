@@ -1,854 +1,299 @@
-require("dotenv").config();
-// ✔️ ممتاز
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder, SlashCommandBuilder, Routes, InteractionType, ChannelType, PermissionFlagsBits, MessageFlags } = require('discord.js');
+const { token, clientId, guildId, adminRoles, logsChannelId } = require('./config.json');
+const fs = require('fs');
+const path = require('path');
+const { REST } = require('@discordjs/rest');
 
-const {
-  Client,
-  GatewayIntentBits,
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  StringSelectMenuBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  ChannelType,
-  RoleSelectMenuBuilder,
-  PermissionFlagsBits,
-  ChannelSelectMenuBuilder,
-} = require("discord.js");
-const { readFileSync, writeFileSync, existsSync, mkdirSync } = require("fs");
-const path = require("path");
-
-// تهيئة العميل
+// تعريف البوت
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages
   ],
+  partials: [Partials.Channel, Partials.Message, Partials.User]
 });
 
-// تحميل الإعدادات
-let config;
-try {
-  config = JSON.parse(
-    readFileSync(path.join(__dirname, "config.json"), "utf8"),
-  );
-} catch (error) {
-  console.error("❌ خطأ في تحميل ملف الإعدادات:", error.message);
-  process.exit(1);
-}
+// تحميل البيانات
+let ticketData = {};
+let db = { sections: {} };
+let ticketCounter = { lastNumber: 0 };
 
-// مسار قاعدة البيانات
-const dbPath = path.join(__dirname, "database", "welcome.json");
-
-// ضمان وجود مجلد database
-if (!existsSync(path.join(__dirname, "database"))) {
-  mkdirSync(path.join(__dirname, "database"));
-}
-
-// قراءة البيانات من قاعدة البيانات مع معالجة الأخطاء
-function readData() {
+// دالة لتحميل البيانات مع التعامل مع الأخطاء
+function loadData() {
   try {
-    if (!existsSync(dbPath)) {
-      // إنشاء بيانات افتراضية إذا لم يكن الملف موجودًا
-      const initialData = {
-        title: "مرحباً بك في {server.name}!",
-        message:
-          "أهلاً {user.mention} في {server.name}! نحن الآن {member.count} أعضاء.",
-        banner: "",
-        thumbnail: "",
-        channel: "",
-        role: "",
-        enabled: false,
-        dm: false,
-        logs: [],
-        color: "#0099FF",
-      };
-      writeFileSync(dbPath, JSON.stringify(initialData, null, 2));
-      return initialData;
+    if (fs.existsSync('./ticket.json')) {
+      ticketData = JSON.parse(fs.readFileSync('./ticket.json'));
     }
-
-    const data = readFileSync(dbPath, "utf8");
-    if (!data.trim()) {
-      throw new Error("ملف قاعدة البيانات فارغ");
+    if (fs.existsSync('./database.json')) {
+      db = JSON.parse(fs.readFileSync('./database.json'));
     }
-
-    const parsed = JSON.parse(data);
-
-    // ضمان أن logs موجودة كـ Array
-    if (!Array.isArray(parsed.logs)) {
-      parsed.logs = [];
+    if (fs.existsSync('./tickets_counter.json')) {
+      ticketCounter = JSON.parse(fs.readFileSync('./tickets_counter.json'));
     }
-
-    return parsed;
-  } catch (error) {
-    console.error("❌ خطأ في قراءة قاعدة البيانات:", error.message);
-    // إنشاء بيانات افتراضية في حالة الخطأ
-    const initialData = {
-      title: "مرحباً بك في {server.name}!",
-      message:
-        "أهلاً {user.mention} في {server.name}! نحن الآن {member.count} أعضاء.",
-      banner: "",
-      thumbnail: "",
-      channel: "",
-      role: "",
-      enabled: false,
-      dm: false,
-      logs: [],
-      color: "#0099FF",
-    };
-    writeFileSync(dbPath, JSON.stringify(initialData, null, 2));
-    return initialData;
+  } catch (err) {
+    console.error('خطأ في تحميل الملفات:', err);
+    // إنشاء ملفات جديدة إذا كانت معطوبة
+    saveData();
   }
 }
 
-// كتابة البيانات إلى قاعدة البيانات
-function writeData(data) {
+loadData();
+
+// تعريف الأوامر
+const commands = [
+  new SlashCommandBuilder()
+    .setName('ticket-setup')
+    .setDescription('ينشئ نظام التذاكر في الروم الحالي')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder()
+    .setName('ticket-panel')
+    .setDescription('يفتح لوحة تحكم التذاكر')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+].map(cmd => cmd.toJSON());
+
+const rest = new REST({ version: '10' }).setToken(token);
+
+// تسجيل الأوامر عند التشغيل
+(async () => {
   try {
-    writeFileSync(dbPath, JSON.stringify(data, null, 2));
-  } catch (error) {
-    console.error("❌ خطأ في كتابة قاعدة البيانات:", error.message);
+    await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+    console.log('✅ تم تسجيل الأوامر بنجاح');
+  } catch (err) {
+    console.error('❌ خطأ في تسجيل الأوامر:', err);
+  }
+})();
+
+// الدوال المساعدة
+function saveData() {
+  try {
+    fs.writeFileSync(path.join(__dirname, 'ticket.json'), JSON.stringify(ticketData, null, 2));
+    fs.writeFileSync(path.join(__dirname, 'database.json'), JSON.stringify(db, null, 2));
+    fs.writeFileSync(path.join(__dirname, 'tickets_counter.json'), JSON.stringify(ticketCounter, null, 2));
+  } catch (err) {
+    console.error('خطأ في حفظ البيانات:', err);
   }
 }
 
-// إضافة سجل
-function addLog(action, userId) {
-  const data = readData();
-  data.logs.push({
-    action,
-    userId,
-    timestamp: new Date().toISOString(),
-  });
-  // الحفاظ على آخر 50 سجل فقط
-  if (data.logs.length > 50) {
-    data.logs = data.logs.slice(-50);
+async function checkBotPermissions(guild) {
+  const me = await guild.members.fetchMe();
+  const requiredPerms = [
+    PermissionFlagsBits.ManageChannels,
+    PermissionFlagsBits.ManageRoles,
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessages
+  ];
+  
+  const missing = me.permissions.missing(requiredPerms);
+  if (missing.length > 0) {
+    console.error('❌ البوت ينقصه الصلاحيات التالية:', missing);
+    return false;
   }
-  writeData(data);
+  return true;
 }
 
-// التحقق من الصلاحيات الموسعة
-async function checkPermissions(interaction) {
-  if (interaction.user.id === config.adminId) return true;
-
-  const member = await interaction.guild.members.fetch(interaction.user.id);
-  return member.permissions.has(PermissionFlagsBits.Administrator);
+function isAdmin(member) {
+  return member?.roles?.cache?.some(role => adminRoles.includes(role.id));
 }
 
-// التحقق من صحة الروابط
-function isValidUrl(string) {
+function isTicketStaff(member, ticketRoleId) {
+  if (!ticketRoleId) return isAdmin(member);
+  return member?.roles?.cache?.has(ticketRoleId) || isAdmin(member);
+}
+
+async function createLog(action, executor, target, details = {}) {
+  const logChannel = client.channels.cache.get(logsChannelId);
+  if (!logChannel) return;
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📝 سجل التذاكر - ${action}`)
+    .setColor('#FFFF00')
+    .addFields(
+      { name: 'الإجراء', value: action, inline: true },
+      { name: 'المشرف', value: `${executor} (${executor.user.tag})`, inline: true },
+      { name: 'الهدف', value: target || 'لا يوجد', inline: true },
+      { name: 'الوقت', value: new Date().toLocaleString('ar-SA'), inline: true },
+      { name: 'التفاصيل', value: details.extra || 'لا توجد تفاصيل إضافية', inline: false }
+    )
+    .setFooter({ 
+      text: `${client.guilds.cache.get(guildId)?.name}`, 
+      iconURL: client.guilds.cache.get(guildId)?.iconURL() 
+    })
+    .setTimestamp();
+
+  await logChannel.send({ embeds: [embed] }).catch(console.error);
+}
+
+async function createTicketChannel(guild, member, section) {
+  ticketCounter.lastNumber += 1;
+  const ticketNumber = ticketCounter.lastNumber;
+  const channelName = `🎫・${ticketNumber}`;
+
   try {
-    new URL(string);
+    // التحقق من صلاحيات البوت أولاً
+    if (!await checkBotPermissions(guild)) {
+      throw new Error('البوت لا يملك الصلاحيات اللازمة');
+    }
+
+    // التحقق من وجود العضو في الكاش
+    const ticketCreator = await guild.members.fetch(member.id).catch(() => null);
+    if (!ticketCreator) {
+      throw new Error('العضو غير موجود في السيرفر');
+    }
+
+    // جلب الرول والتأكد من وجوده
+    const supportRole = await guild.roles.fetch(section.role).catch(() => null);
+    
+    // جلب الكاتجوري والتأكد من وجوده
+    const category = section.category ? await guild.channels.fetch(section.category).catch(() => null) : null;
+
+    // إنشاء مصفوفة صلاحيات القناة
+    const permissionOverwrites = [
+      {
+        id: guild.id,
+        deny: [PermissionFlagsBits.ViewChannel],
+      },
+      {
+        id: ticketCreator.id,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory
+        ],
+      }
+    ];
+
+    // إضافة صلاحيات الرول إذا كان موجوداً
+    if (supportRole) {
+      permissionOverwrites.push({
+        id: supportRole.id,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory,
+          PermissionFlagsBits.ManageMessages
+        ],
+      });
+    }
+
+    // إضافة صلاحيات المشرفين
+    for (const roleId of adminRoles) {
+      const adminRole = await guild.roles.fetch(roleId).catch(() => null);
+      if (adminRole) {
+        permissionOverwrites.push({
+          id: adminRole.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.ManageChannels
+          ],
+        });
+      }
+    }
+
+    // إنشاء القناة
+    const channel = await guild.channels.create({
+      name: channelName,
+      type: ChannelType.GuildText,
+      parent: category?.id || null,
+      permissionOverwrites,
+      topic: `${member.id}|${section.role}`,
+      reason: `New ticket created by ${member.user.tag}`
+    });
+
+    saveData();
+
+    // إنشاء رسالة الترحيب
+    const embed = new EmbedBuilder()
+      .setTitle(`تذكرة #${ticketNumber} - ${section.title}`)
+      .setDescription(section.description)
+      .setColor(ticketData.embedColor || '#0099ff')
+      .setFooter({ 
+        text: `${guild.name} | من إنشاء: ${member.user.tag}`, 
+        iconURL: guild.iconURL() || undefined 
+      });
+
+    if (ticketData.serverBanner) {
+      embed.setImage(ticketData.serverBanner);
+    }
+
+    const buttons = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('close_ticket')
+        .setLabel('إغلاق التذكرة')
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId('add_member')
+        .setLabel('إضافة عضو')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('claim_ticket')
+        .setLabel('استلام التذكرة')
+        .setStyle(ButtonStyle.Primary)
+    );
+
+    const mention = supportRole ? `<@&${supportRole.id}>` : '';
+    await channel.send({ 
+      content: `<@${member.id}> ${mention}`,
+      embeds: [embed],
+      components: [buttons]
+    });
+
+    await createLog('تم إنشاء تذكرة', member, channel.name, {
+      extra: `القسم: ${section.title} | الرقم: #${ticketNumber}`
+    });
+
+    return channel;
+  } catch (err) {
+    console.error('خطأ في إنشاء التذكرة:', err);
+    
+    // إرسال رسالة خطأ للعضو إذا فشل إنشاء التذكرة
+    try {
+      await member.send('❌ تعذر إنشاء التذكرة، يرجى المحاولة لاحقاً أو التواصل مع الإدارة');
+    } catch (dmError) {
+      console.error('فشل إرسال رسالة خاصة:', dmError);
+    }
+    
+    return null;
+  }
+}
+
+async function closeTicket(interaction) {
+  const modal = new ModalBuilder()
+    .setCustomId('close_reason_modal')
+    .setTitle('إغلاق التذكرة')
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('close_reason')
+          .setLabel('سبب الإغلاق (اختياري)')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(false)
+      )
+    );
+  
+  await interaction.showModal(modal);
+}
+
+async function updateTicketStatus(channel, status) {
+  const ticketNumber = channel.name.split('・')[1];
+  const newName = status === 'closed' ? `🔐・${ticketNumber}` : `🎫・${ticketNumber}`;
+  
+  try {
+    await channel.setName(newName);
     return true;
-  } catch (_) {
+  } catch (err) {
+    console.error('خطأ في تحديث حالة التذكرة:', err);
     return false;
   }
 }
 
-// معالجة النص واستبدال المتغيرات
-function processText(text, user, guild) {
-  if (!text) return "";
-  return text
-    .replace(/{user.mention}/g, `<@${user.id}>`)
-    .replace(/{user.name}/g, user.username)
-    .replace(/{user.tag}/g, user.tag)
-    .replace(/{server.name}/g, guild.name)
-    .replace(/{member.count}/g, guild.memberCount.toString());
-}
-
-// تحويل اللون من HEX إلى عدد
-function hexToInt(hexColor) {
-  if (!hexColor) return 0x0099ff;
-  try {
-    return parseInt(hexColor.replace("#", ""), 16);
-  } catch (error) {
-    return 0x0099ff;
-  }
-}
-
-// إنشاء لوحة التحكم
-function createControlPanel(page = "main") {
-  const data = readData();
-
-  // تحويل اللون من HEX إلى عدد
-  const color = hexToInt(data.color);
-
-  if (page === "logs") {
-    // إنشاء واجهة سجلات النظام
-    const logsEmbed = new EmbedBuilder()
-      .setTitle("📜 سجل التعديلات - الصفحة 1")
-      .setColor(color);
-
-    const recentLogs = Array.isArray(data.logs)
-      ? data.logs.slice(-10).reverse()
-      : [];
-    if (recentLogs.length === 0) {
-      logsEmbed.setDescription("لا يوجد سجلات حتى الآن");
-    } else {
-      let logsDescription = "";
-      for (let i = 0; i < Math.min(recentLogs.length, 10); i++) {
-        const log = recentLogs[i];
-        const date = new Date(log.timestamp).toLocaleString("ar-SA");
-        logsDescription += `**${i + 1}.** ${date} - ${log.action}\n`;
-      }
-      logsEmbed.setDescription(logsDescription);
-    }
-
-    return {
-      embeds: [logsEmbed],
-      components: [
-        new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId("logs_prev")
-            .setLabel("السابق")
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(true),
-          new ButtonBuilder()
-            .setCustomId("logs_next")
-            .setLabel("التالي")
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(data.logs.length <= 10),
-          new ButtonBuilder()
-            .setCustomId("back_main")
-            .setLabel("العودة للرئيسية")
-            .setStyle(ButtonStyle.Primary),
-        ),
-      ],
-    };
-  }
-
-  // الصفحة الرئيسية
-  const embed = new EmbedBuilder()
-    .setTitle("لوحة التحكم: إعدادات الترحيب")
-    .setDescription(
-      "استخدم الأزرار أدناه لتخصيص رسالة الترحيب. سيتم إرسال هذه الرسالة تلقائياً عندما ينضم عضو جديد إلى السيرفر",
-    )
-    .setColor(color);
-
-  if (data.thumbnail && isValidUrl(data.thumbnail))
-    embed.setThumbnail(data.thumbnail);
-  if (data.banner && isValidUrl(data.banner)) embed.setImage(data.banner);
-
-  embed
-    .addFields(
-      {
-        name: "الحالة",
-        value: data.enabled ? "✅ مفعل" : "❌ معطل",
-        inline: true,
-      },
-      {
-        name: "القناة",
-        value: data.channel ? `<#${data.channel}>` : "❌ غير محددة",
-        inline: true,
-      },
-      {
-        name: "الرتبة التلقائية",
-        value: data.role ? `<@&${data.role}>` : "❌ غير محددة",
-        inline: true,
-      },
-      {
-        name: "الرسالة الخاصة",
-        value: data.dm ? "✅ مفعلة" : "❌ معطلة",
-        inline: true,
-      },
-      { name: "لون الرسالة", value: data.color || "#0099FF", inline: true },
-    )
-    .setTimestamp()
-    .setFooter({ text: "نظام الترحيب - إعدادات التحكم" });
-
-  return {
-    embeds: [embed],
-    components: createControlButtons(),
-  };
-}
-
-// إنشاء أزرار التحكم
-function createControlButtons() {
-  const data = readData();
-
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("set_welcome")
-        .setLabel("📝 ضبط الترحيب")
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId("set_channel")
-        .setLabel("📍 تحديد القناة")
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId("show_variables")
-        .setLabel("💡 شرح المتغيرات")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId("set_color")
-        .setLabel("🎨 تغيير اللون")
-        .setStyle(ButtonStyle.Secondary),
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("set_role")
-        .setLabel("🎭 منح رتبة تلقائية")
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId("preview")
-        .setLabel("👀 معاينة الرسالة")
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId("toggle_dm")
-        .setLabel(
-          data.dm ? "📩 إيقاف الرسائل الخاصة" : "📩 تفعيل الرسائل الخاصة",
-        )
-        .setStyle(data.dm ? ButtonStyle.Danger : ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId("show_logs")
-        .setLabel("📜 سجل الإعدادات")
-        .setStyle(ButtonStyle.Secondary),
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("enable")
-        .setLabel("✅ تفعيل النظام")
-        .setStyle(ButtonStyle.Success)
-        .setDisabled(data.enabled),
-      new ButtonBuilder()
-        .setCustomId("disable")
-        .setLabel("❌ تعطيل النظام")
-        .setStyle(ButtonStyle.Danger)
-        .setDisabled(!data.enabled),
-      new ButtonBuilder()
-        .setCustomId("quick_setup")
-        .setLabel("⚡ الإعداد السريع")
-        .setStyle(ButtonStyle.Primary),
-    ),
-  ];
-}
-
-// تحديث رسالة لوحة التحكم
-async function updateControlPanel(interaction, page = "main") {
-  const panel = createControlPanel(page);
-  await interaction.editReply(panel);
-}
-
-// معالجة الأوامر
-client.on("interactionCreate", async (interaction) => {
-  // معالجة أمر النظام الأساسي
-  if (
-    interaction.isChatInputCommand() &&
-    interaction.commandName === "welcome"
-  ) {
-    if (!(await checkPermissions(interaction))) {
-      return interaction.reply({
-        content: "ليس لديك صلاحية استخدام هذا الأمر",
-        ephemeral: true,
-      });
-    }
-
-    await interaction.reply(createControlPanel());
-  }
-
-  // معالجة النقر على الأزرار
-  if (interaction.isButton()) {
-    if (!(await checkPermissions(interaction))) {
-      return interaction.reply({
-        content: "ليس لديك صلاحية استخدام هذا الأمر",
-        ephemeral: true,
-      });
-    }
-
-    const data = readData();
-
-    // الأزرار التي تتطلب إظهار مودال لا يجب تأجيلها
-    const modalButtons = ["set_welcome", "set_color", "quick_setup"];
-
-    if (modalButtons.includes(interaction.customId)) {
-      // معالجة الأزرار التي تفتح مودال مباشرة
-      switch (interaction.customId) {
-        case "set_welcome":
-          // إنشاء نموذج ضبط الترحيب
-          const modal = new ModalBuilder()
-            .setCustomId("welcome_modal")
-            .setTitle("إعدادات رسالة الترحيب");
-
-          const titleInput = new TextInputBuilder()
-            .setCustomId("title_input")
-            .setLabel("عنوان الترحيب")
-            .setStyle(TextInputStyle.Short)
-            .setValue(data.title || "")
-            .setRequired(false);
-
-          const messageInput = new TextInputBuilder()
-            .setCustomId("message_input")
-            .setLabel("رسالة الترحيب")
-            .setStyle(TextInputStyle.Paragraph)
-            .setValue(data.message || "")
-            .setRequired(true);
-
-          const bannerInput = new TextInputBuilder()
-            .setCustomId("banner_input")
-            .setLabel("رابط صورة البانر (اختياري)")
-            .setStyle(TextInputStyle.Short)
-            .setValue(data.banner || "")
-            .setRequired(false);
-
-          const thumbnailInput = new TextInputBuilder()
-            .setCustomId("thumbnail_input")
-            .setLabel("رابط صورة الثمبنيل (اختياري)")
-            .setStyle(TextInputStyle.Short)
-            .setValue(data.thumbnail || "")
-            .setRequired(false);
-
-          const firstActionRow = new ActionRowBuilder().addComponents(
-            titleInput,
-          );
-          const secondActionRow = new ActionRowBuilder().addComponents(
-            messageInput,
-          );
-          const thirdActionRow = new ActionRowBuilder().addComponents(
-            bannerInput,
-          );
-          const fourthActionRow = new ActionRowBuilder().addComponents(
-            thumbnailInput,
-          );
-
-          modal.addComponents(
-            firstActionRow,
-            secondActionRow,
-            thirdActionRow,
-            fourthActionRow,
-          );
-
-          await interaction.showModal(modal);
-          break;
-
-        case "set_color":
-          // تغيير لون الرسالة
-          const colorModal = new ModalBuilder()
-            .setCustomId("color_modal")
-            .setTitle("تغيير لون رسالة الترحيب");
-
-          const colorInput = new TextInputBuilder()
-            .setCustomId("color_input")
-            .setLabel("أدخل اللون بصيغة HEX (مثل: #0099FF)")
-            .setStyle(TextInputStyle.Short)
-            .setValue(data.color || "#0099FF")
-            .setRequired(true)
-            .setMaxLength(7);
-
-          const colorActionRow = new ActionRowBuilder().addComponents(
-            colorInput,
-          );
-          colorModal.addComponents(colorActionRow);
-
-          await interaction.showModal(colorModal);
-          break;
-
-        case "quick_setup":
-          // الإعداد السريع للنظام
-          const setupModal = new ModalBuilder()
-            .setCustomId("setup_modal")
-            .setTitle("الإعداد السريع لنظام الترحيب");
-
-          const channelIdInput = new TextInputBuilder()
-            .setCustomId("channel_id")
-            .setLabel("معرف قناة الترحيب")
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder("123456789012345678")
-            .setRequired(true);
-
-          const welcomeMsgInput = new TextInputBuilder()
-            .setCustomId("welcome_msg")
-            .setLabel("رسالة الترحيب")
-            .setStyle(TextInputStyle.Paragraph)
-            .setValue(data.message || "أهلاً {user.mention} في {server.name}!")
-            .setRequired(true);
-
-          const firstRow = new ActionRowBuilder().addComponents(channelIdInput);
-          const secondRow = new ActionRowBuilder().addComponents(
-            welcomeMsgInput,
-          );
-
-          setupModal.addComponents(firstRow, secondRow);
-
-          await interaction.showModal(setupModal);
-          break;
-      }
-    } else {
-      // الأزرار الأخرى التي لا تفتح مودال يمكن تأجيلها
-      await interaction.deferUpdate();
-
-      switch (interaction.customId) {
-        case "set_channel":
-          // استخدام ChannelSelectMenu بدلاً من StringSelectMenu
-          const channelSelect = new ChannelSelectMenuBuilder()
-            .setCustomId("channel_select")
-            .setPlaceholder("اختر قناة الترحيب")
-            .setChannelTypes([ChannelType.GuildText]);
-
-          await interaction.followUp({
-            content: "اختر القناة التي سيتم إرسال رسائل الترحيب فيها:",
-            components: [new ActionRowBuilder().addComponents(channelSelect)],
-            ephemeral: true,
-          });
-          break;
-
-        case "show_variables":
-          // عرض شرح المتغيرات
-          const variablesEmbed = new EmbedBuilder()
-            .setTitle("💡 المتغيرات المتاحة")
-            .setDescription("يمكنك استخدام هذه المتغيرات في رسالة الترحيب:")
-            .addFields(
-              {
-                name: "{user.mention}",
-                value: "منشن العضو الجديد",
-                inline: true,
-              },
-              { name: "{user.name}", value: "اسم العضو", inline: true },
-              { name: "{user.tag}", value: "اسم العضو كامل", inline: true },
-              { name: "{server.name}", value: "اسم السيرفر", inline: true },
-              { name: "{member.count}", value: "عدد الأعضاء", inline: true },
-            )
-            .setColor(hexToInt(data.color));
-
-          await interaction.followUp({
-            embeds: [variablesEmbed],
-            ephemeral: true,
-          });
-          break;
-
-        case "set_role":
-          // قائمة اختيار الرتب
-          const roleSelect = new RoleSelectMenuBuilder()
-            .setCustomId("role_select")
-            .setPlaceholder("اختر رتبة التلقائية");
-
-          await interaction.followUp({
-            content: "اختر الرتبة التي سيتم منحها تلقائياً للأعضاء الجدد:",
-            components: [new ActionRowBuilder().addComponents(roleSelect)],
-            ephemeral: true,
-          });
-          break;
-
-        case "preview":
-          // معاينة رسالة الترحيب مع تحسينات
-          const previewEmbed = new EmbedBuilder()
-            .setTitle(
-              processText(
-                data.title || "مرحباً بك!",
-                interaction.user,
-                interaction.guild,
-              ),
-            )
-            .setDescription(
-              processText(
-                data.message || "أهلاً بك في السيرفر!",
-                interaction.user,
-                interaction.guild,
-              ),
-            )
-            .setColor(hexToInt(data.color));
-
-          if (data.thumbnail && isValidUrl(data.thumbnail))
-            previewEmbed.setThumbnail(data.thumbnail);
-          if (data.banner && isValidUrl(data.banner))
-            previewEmbed.setImage(data.banner);
-
-          // إضافة معلومات إضافية للمعاينة
-          previewEmbed.addFields(
-            {
-              name: "القناة",
-              value: data.channel ? `<#${data.channel}>` : "❌ غير محددة",
-              inline: true,
-            },
-            {
-              name: "الرتبة",
-              value: data.role ? `<@&${data.role}>` : "❌ غير محددة",
-              inline: true,
-            },
-            {
-              name: "الرسائل الخاصة",
-              value: data.dm ? "✅ مفعلة" : "❌ معطلة",
-              inline: true,
-            },
-          );
-
-          await interaction.followUp({
-            content: "**👀 معاينة رسالة الترحيب:**",
-            embeds: [previewEmbed],
-            ephemeral: true,
-          });
-          break;
-
-        case "toggle_dm":
-          // تبديل إرسال الرسائل الخاصة
-          data.dm = !data.dm;
-          writeData(data);
-          addLog(
-            `تبديل إرسال الرسائل الخاصة إلى: ${data.dm ? "مفعل" : "معطل"}`,
-            interaction.user.id,
-          );
-
-          await interaction.followUp({
-            content: `تم ${data.dm ? "تفعيل" : "تعطيل"} إرسال الرسائل الخاصة`,
-            ephemeral: true,
-          });
-
-          // تحديث لوحة التحكم
-          await updateControlPanel(interaction);
-          break;
-
-        case "show_logs":
-          // عرض سجل الإعدادات بنظام الصفحات
-          await updateControlPanel(interaction, "logs");
-          break;
-
-        case "logs_prev":
-        case "logs_next":
-        case "back_main":
-          // التنقل بين الصفحات
-          await updateControlPanel(
-            interaction,
-            interaction.customId === "back_main" ? "main" : "logs",
-          );
-          break;
-
-        case "enable":
-          // تفعيل النظام
-          data.enabled = true;
-          writeData(data);
-          addLog("تفعيل نظام الترحيب", interaction.user.id);
-
-          await interaction.followUp({
-            content: "تم تفعيل نظام الترحيب",
-            ephemeral: true,
-          });
-
-          // تحديث لوحة التحكم
-          await updateControlPanel(interaction);
-          break;
-
-        case "disable":
-          // تعطيل النظام
-          data.enabled = false;
-          writeData(data);
-          addLog("تعطيل نظام الترحيب", interaction.user.id);
-
-          await interaction.followUp({
-            content: "تم تعطيل نظام الترحيب",
-            ephemeral: true,
-          });
-
-          // تحديث لوحة التحكم
-          await updateControlPanel(interaction);
-          break;
-      }
-    }
-  }
-
-  // معالجة النماذج (Modals)
-  if (interaction.isModalSubmit()) {
-    if (interaction.customId === "welcome_modal") {
-      const data = readData();
-
-      data.title = interaction.fields.getTextInputValue("title_input");
-      data.message = interaction.fields.getTextInputValue("message_input");
-
-      // التحقق من صحة الروابط قبل حفظها
-      const bannerUrl = interaction.fields.getTextInputValue("banner_input");
-      const thumbnailUrl =
-        interaction.fields.getTextInputValue("thumbnail_input");
-
-      data.banner = bannerUrl && isValidUrl(bannerUrl) ? bannerUrl : "";
-      data.thumbnail =
-        thumbnailUrl && isValidUrl(thumbnailUrl) ? thumbnailUrl : "";
-
-      writeData(data);
-      addLog("تعديل إعدادات رسالة الترحيب", interaction.user.id);
-
-      await interaction.reply({
-        content: "تم حفظ إعدادات الترحيب بنجاح",
-        ephemeral: true,
-      });
-    }
-
-    if (interaction.customId === "color_modal") {
-      const data = readData();
-      const colorInput = interaction.fields.getTextInputValue("color_input");
-
-      // التحقق من صيغة اللون
-      if (/^#([0-9A-F]{3}){1,2}$/i.test(colorInput)) {
-        data.color = colorInput;
-        writeData(data);
-        addLog(`تغيير لون الرسالة إلى: ${colorInput}`, interaction.user.id);
-
-        await interaction.reply({
-          content: `تم تغيير لون الرسالة إلى \`${colorInput}\``,
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "صيغة اللون غير صحيحة. يجب أن تكون بصيغة HEX (مثل: #0099FF)",
-          ephemeral: true,
-        });
-      }
-    }
-
-    if (interaction.customId === "setup_modal") {
-      const data = readData();
-      const channelId = interaction.fields.getTextInputValue("channel_id");
-      const welcomeMsg = interaction.fields.getTextInputValue("welcome_msg");
-
-      // التحقق من وجود القناة
-      const channel = interaction.guild.channels.cache.get(channelId);
-      if (!channel) {
-        return interaction.reply({
-          content: "معرف القناة غير صحيح أو القناة غير موجودة",
-          ephemeral: true,
-        });
-      }
-
-      data.channel = channelId;
-      data.message = welcomeMsg;
-      data.enabled = true;
-
-      writeData(data);
-      addLog("الإعداد السريع لنظام الترحيب", interaction.user.id);
-
-      await interaction.reply({
-        content: `تم الإعداد السريع بنجاح! النظام مفعل الآن ورسائل الترحيب ستُرسل في <#${channelId}>`,
-        ephemeral: true,
-      });
-    }
-  }
-
-  // معالجة قوائم الاختيار
-  if (interaction.isChannelSelectMenu()) {
-    if (interaction.customId === "channel_select") {
-      // تأجيل الرد لتجنب الخطأ
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.deferUpdate();
-      }
-
-      const data = readData();
-      data.channel = interaction.values[0];
-      writeData(data);
-      addLog(
-        `تعيين قناة الترحيب إلى: ${interaction.values[0]}`,
-        interaction.user.id,
-      );
-
-      await interaction.followUp({
-        content: `تم تعيين قناة الترحيب إلى <#${interaction.values[0]}>`,
-        ephemeral: true,
-      });
-    }
-  }
-
-  // معالجة اختيار الرتب
-  if (interaction.isRoleSelectMenu()) {
-    if (interaction.customId === "role_select") {
-      // تأجيل الرد لتجنب الخطأ
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.deferUpdate();
-      }
-
-      const data = readData();
-      data.role = interaction.values[0];
-      writeData(data);
-      addLog(
-        `تعيين الرتبة التلقائية إلى: ${interaction.values[0]}`,
-        interaction.user.id,
-      );
-
-      await interaction.followUp({
-        content: `تم تعيين الرتبة التلقائية إلى <@&${interaction.values[0]}>`,
-        ephemeral: true,
-      });
-    }
-  }
-});
-
-// معالجة دخول الأعضاء الجدد
-client.on("guildMemberAdd", async (member) => {
-  const data = readData();
-
-  if (!data.enabled) return;
-
-  // إرسال رسالة الترحيب في القناة المحددة
-  if (data.channel) {
-    const channel = member.guild.channels.cache.get(data.channel);
-    if (channel) {
-      const welcomeEmbed = new EmbedBuilder()
-        .setTitle(processText(data.title, member.user, member.guild))
-        .setDescription(processText(data.message, member.user, member.guild))
-        .setColor(hexToInt(data.color));
-
-      if (data.thumbnail && isValidUrl(data.thumbnail))
-        welcomeEmbed.setThumbnail(data.thumbnail);
-      if (data.banner && isValidUrl(data.banner))
-        welcomeEmbed.setImage(data.banner);
-
-      try {
-        await channel.send({ embeds: [welcomeEmbed] });
-        addLog(
-          `تم إرسال رسالة ترحيب للعضو: ${member.user.tag}`,
-          client.user.id,
-        );
-      } catch (error) {
-        console.error("فشل في إرسال رسالة الترحيب:", error.message);
-        addLog(
-          `فشل في إرسال رسالة ترحيب للعضو: ${member.user.tag}`,
-          client.user.id,
-        );
-      }
-    }
-  }
-
-  // منح الرتبة التلقائية
-  if (data.role) {
-    try {
-      await member.roles.add(data.role);
-      addLog(
-        `تم منح الرتبة تلقائياً للعضو: ${member.user.tag}`,
-        client.user.id,
-      );
-    } catch (error) {
-      console.error("فشل في منح الرتبة:", error.message);
-      addLog(
-        `فشل في منح الرتبة تلقائياً للعضو: ${member.user.tag}`,
-        client.user.id,
-      );
-    }
-  }
-
-  // إرسال رسالة خاصة
-  if (data.dm) {
-    try {
-      const dmEmbed = new EmbedBuilder()
-        .setTitle(processText(data.title, member.user, member.guild))
-        .setDescription(processText(data.message, member.user, member.guild))
-        .setColor(hexToInt(data.color));
-
-      if (data.thumbnail && isValidUrl(data.thumbnail))
-        dmEmbed.setThumbnail(data.thumbnail);
-      if (data.banner && isValidUrl(data.banner)) dmEmbed.setImage(data.banner);
-
-      await member.send({ embeds: [dmEmbed] });
-      addLog(`تم إرسال رسالة خاصة للعضو: ${member.user.tag}`, client.user.id);
-    } catch (error) {
-      console.error("فشل في إرسال الرسالة الخاصة:", error.message);
-      addLog(
-        `فشل في إرسال رسالة خاصة للعضو: ${member.user.tag}`,
-        client.user.id,
-      );
-    }
-  }
-});
-
-// تسجيل الدخول
-client.once("clientReady", () => {
+// الأحداث
+client.once('ready', () => {
+  console.log(`✅ تم تسجيل الدخول باسم ${client.user.tag}`);
   console.log(`
  ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄ ▄▄▄▄▄▄     ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄ ▄▄   ▄▄ ▄▄▄▄▄▄  ▄▄▄ ▄▄▄▄▄▄▄ 
 █       █       █       █       █      █   █       █       █  █ █  █      ██   █       █
@@ -858,38 +303,500 @@ client.once("clientReady", () => {
  ▄▄▄▄▄█ █   █   █   █▄▄▄█   █▄▄▄█       █   ▄▄▄▄▄█ █ █   █ █       █       █   █       █
 █▄▄▄▄▄▄▄█▄▄▄█   █▄▄▄▄▄▄▄█▄▄▄▄▄▄▄█▄▄▄▄▄▄█   █▄▄▄▄▄▄▄█ █▄▄▄█ █▄▄▄▄▄▄▄█▄▄▄▄▄▄██▄▄▄█▄▄▄▄▄▄▄█
                 `);
-  console.log(`✅Bot is Ready! ${client.user.tag}!`);
-  console.log(`🔧Code by SPEED Studio`);
-  console.log(`🔗discord.gg/SP`);
-
-  // تسجيل الأمر
-  const commands = [
-    {
-      name: "welcome",
-      description: "فتح لوحة تحكم نظام الترحيب",
-    },
-  ];
-
-  client.application.commands
-    .set(commands)
-    .then(() => console.log("✅ تم تسجيل الأوامر بنجاح"))
-    .catch(console.error);
+        console.log(`Bot is Ready! ${client.user.tag}!`);
+        console.log(`Code by SPEED Studio`);
+        console.log(`discord.gg/SP`);
+  // إعادة تحميل البيانات عند إعادة التشغيل
+  loadData();
 });
 
-// تشغيل البوت
-client.login(process.env.TOKEN).catch((error) => {
-  console.error("❌ فشل في تسجيل الدخول:", error.message);
-  process.exit(1);
+client.on('interactionCreate', async interaction => {
+  if (!interaction.guild) return;
+
+  try {
+    if (interaction.isChatInputCommand()) {
+      const { commandName, member } = interaction;
+
+      if (!isAdmin(member)) {
+        return interaction.reply({ content: '❌ هذا الأمر للإدارة فقط', flags: MessageFlags.Ephemeral });
+      }
+
+      if (commandName === 'ticket-setup') {
+        const embed = new EmbedBuilder()
+          .setTitle('افتح تذكرتك 🎟️')
+          .setDescription(ticketData.messageContent || 'اختار نوع التذكرة من القائمة تحت')
+          .setColor(ticketData.embedColor || '#0099ff');
+
+        if (ticketData.serverBanner) {
+          embed.setImage(ticketData.serverBanner);
+        }
+
+        embed.setFooter({ 
+          text: interaction.guild.name, 
+          iconURL: interaction.guild.iconURL() || undefined 
+        });
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('open_ticket')
+            .setLabel('افتح تذكرة')
+            .setStyle(ButtonStyle.Primary)
+        );
+
+        await interaction.channel.send({ embeds: [embed], components: [row] });
+        await interaction.reply({ content: '✅ تم تنصيب نظام التذاكر بنجاح', flags: MessageFlags.Ephemeral });
+        await createLog('تم إعداد التذاكر', member, interaction.channel.name);
+      }
+
+      if (commandName === 'ticket-panel') {
+        const embed = new EmbedBuilder()
+          .setTitle('🎛️ لوحة تحكم التذاكر')
+          .setColor(ticketData.embedColor || '#0099ff');
+
+        if (ticketData.serverBanner) {
+          embed.setImage(ticketData.serverBanner);
+        }
+
+        embed.setFooter({ 
+          text: interaction.guild.name, 
+          iconURL: interaction.guild.iconURL() || undefined 
+        });
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('create_section')
+            .setLabel('إنشاء قسم')
+            .setStyle(ButtonStyle.Success),
+          new ButtonBuilder()
+            .setCustomId('delete_section')
+            .setLabel('حذف قسم')
+            .setStyle(ButtonStyle.Danger),
+          new ButtonBuilder()
+            .setCustomId('edit_message')
+            .setLabel('تعديل الواجهة')
+            .setStyle(ButtonStyle.Secondary)
+        );
+
+        await interaction.reply({ 
+          embeds: [embed],
+          components: [row]
+        });
+        await createLog('فتح لوحة التحكم', member);
+      }
+    }
+
+    if (interaction.isButton()) {
+      const { customId, member, guild, channel } = interaction;
+      const [userId, ticketRoleId] = channel.topic?.split('|') || [];
+
+      // تحقق من الصلاحيات
+      if (['close_ticket', 'add_member', 'claim_ticket'].includes(customId)) {
+        if (!isTicketStaff(member, ticketRoleId)) {
+          return interaction.reply({ content: '❌ هذا الأمر لطاقم التذاكر فقط', flags: MessageFlags.Ephemeral });
+        }
+      }
+
+      if (customId === 'open_ticket') {
+        if (!db.sections || Object.keys(db.sections).length === 0) {
+          return interaction.reply({ content: '❌ مافي أقسام متاحة حالياً', flags: MessageFlags.Ephemeral });
+        }
+
+        const menu = new StringSelectMenuBuilder()
+          .setCustomId('ticket_section_select')
+          .setPlaceholder('اختار نوع التذكرة')
+          .addOptions(Object.entries(db.sections).map(([number, section]) => ({
+            label: section.title,
+            description: section.description.slice(0, 100),
+            value: number
+          })));
+
+        const row = new ActionRowBuilder().addComponents(menu);
+
+        await interaction.reply({ content: '📂 اختار القسم المناسب لك:', components: [row], flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (customId === 'close_ticket') {
+        await closeTicket(interaction);
+      }
+
+      if (customId === 'delete_ticket') {
+        const channelName = interaction.channel.name;
+        await interaction.channel.delete();
+        await createLog('تم حذف التذكرة', member, channelName);
+      }
+
+      if (customId === 'reopen_ticket') {
+        await interaction.channel.permissionOverwrites.edit(userId, {
+          ViewChannel: true
+        });
+        
+        await updateTicketStatus(interaction.channel, 'open');
+        
+        await interaction.update({
+          content: '✅ تم إعادة فتح التذكرة',
+          components: [],
+          embeds: []
+        });
+        
+        await createLog('تم إعادة فتح التذكرة', member, interaction.channel.name);
+      }
+
+      if (customId === 'add_member') {
+        const modal = new ModalBuilder()
+          .setCustomId('add_member_modal')
+          .setTitle('إضافة عضو للتذكرة')
+          .addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('member_id')
+                .setLabel('آيدي العضو')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+            )
+          );
+        
+        await interaction.showModal(modal);
+      }
+
+      if (customId === 'claim_ticket') {
+        await interaction.reply({
+          content: `✅ استلم التذكرة ${member}\nهلا والله كيف نقدر نساعدك؟`,
+          allowedMentions: { users: [member.id] }
+        });
+
+        await createLog('تم استلام التذكرة', member, interaction.channel.name);
+      }
+
+      // أوامر الإدارة فقط
+      if (!isAdmin(member)) return;
+
+      if (customId === 'create_section') {
+        const modal = new ModalBuilder()
+          .setCustomId('modal_create_section')
+          .setTitle('إنشاء قسم جديد')
+          .addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('section_title')
+                .setLabel('عنوان القسم')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('section_role')
+                .setLabel('آيدي رول المسؤول')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('section_description')
+                .setLabel('وصف القسم')
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(true)),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('section_category')
+                .setLabel('آيدي الكاتجوري')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('section_number')
+                .setLabel('رقم القسم')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true))
+          );
+        await interaction.showModal(modal);
+      }
+
+      if (customId === 'delete_section') {
+        const modal = new ModalBuilder()
+          .setCustomId('modal_delete_section')
+          .setTitle('حذف قسم')
+          .addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('delete_section_number')
+                .setLabel('رقم القسم اللي تبي تحذفه')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true))
+          );
+        await interaction.showModal(modal);
+      }
+
+      if (customId === 'edit_message') {
+        const modal = new ModalBuilder()
+          .setCustomId('modal_edit_message')
+          .setTitle('تعديل واجهة التذاكر')
+          .addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('new_message_content')
+                .setLabel('الوصف الجديد')
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(false)),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('server_banner')
+                .setLabel('رابط البنر')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(false)),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('server_logo')
+                .setLabel('رابط الشعار')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(false)),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('embed_color')
+                .setLabel('لون الإمبد (مثل #0099ff)')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(false))
+          );
+        await interaction.showModal(modal);
+      }
+    }
+
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId === 'ticket_section_select') {
+        const sectionNumber = interaction.values[0];
+        const section = db.sections[sectionNumber];
+        
+        if (!section) {
+          return interaction.reply({ content: '❌ مالقيت القسم هذا', flags: MessageFlags.Ephemeral });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+        // التحقق من صلاحيات البوت قبل المتابعة
+        if (!await checkBotPermissions(interaction.guild)) {
+          return interaction.editReply({ 
+            content: '❌ البوت لا يملك الصلاحيات اللازمة لإنشاء التذاكر' 
+          });
+        }
+
+        const ticketChannel = await createTicketChannel(interaction.guild, interaction.member, section);
+        
+        if (ticketChannel) {
+          await interaction.editReply({ content: `✅ تم إنشاء تذكرتك هنا: ${ticketChannel.toString()}` });
+        } else {
+          await interaction.editReply({ content: '❌ تعذر إنشاء التذكرة، جرب مرة ثانية' });
+        }
+      }
+    }
+
+    if (interaction.type === InteractionType.ModalSubmit) {
+      if (!isAdmin(interaction.member) && !interaction.customId.startsWith('close_')) {
+        return interaction.reply({ content: '❌ هذا الأمر للإدارة فقط', flags: MessageFlags.Ephemeral });
+      }
+
+      if (interaction.customId === 'close_reason_modal') {
+        const reason = interaction.fields.getTextInputValue('close_reason') || 'ما تم تحديد سبب';
+        const ticketNumber = interaction.channel.name.split('・')[1];
+        const [userId, ticketRoleId] = interaction.channel.topic?.split('|') || [];
+        
+        // تحديث اسم القناة والصلاحيات
+        await updateTicketStatus(interaction.channel, 'closed');
+        await interaction.channel.permissionOverwrites.edit(userId, {
+          ViewChannel: false
+        });
+
+        // إرسال رسالة خاصة للعضو
+        try {
+          const user = await client.users.fetch(userId);
+          const dmChannel = await user.createDM();
+          
+          const closedTicketEmbed = new EmbedBuilder()
+            .setTitle(`تم إغلاق تذكرتك #${ticketNumber}`)
+            .setDescription(`تم إغلاق تذكرتك في ${interaction.guild.name}`)
+            .addFields(
+              { name: 'تم الإغلاق بواسطة', value: interaction.member.toString(), inline: true },
+              { name: 'وقت الإغلاق', value: new Date().toLocaleString('ar-SA'), inline: true },
+              { name: 'سبب الإغلاق', value: reason, inline: false }
+            )
+            .setFooter({ 
+              text: interaction.guild.name, 
+              iconURL: interaction.guild.iconURL() 
+            })
+            .setColor('#FF0000');
+          
+          await dmChannel.send({ embeds: [closedTicketEmbed] });
+        } catch (err) {
+          console.error('ماقدرت أرسل الرسالة الخاصة:', err);
+        }
+
+        // عرض خيارات ما بعد الإغلاق
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('delete_ticket')
+            .setLabel('حذف التذكرة')
+            .setStyle(ButtonStyle.Danger),
+          new ButtonBuilder()
+            .setCustomId('reopen_ticket')
+            .setLabel('إعادة فتح التذكرة')
+            .setStyle(ButtonStyle.Success)
+        );
+
+        await interaction.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle(`تم إغلاق التذكرة #${ticketNumber}`)
+              .setDescription(`**السبب:** ${reason}`)
+              .setColor('#FF0000')
+          ],
+          components: [row]
+        });
+
+        await createLog('تم إغلاق التذكرة', interaction.member, `#${ticketNumber}`, {
+          extra: `السبب: ${reason}`
+        });
+      }
+
+      if (interaction.customId === 'add_member_modal') {
+        const memberId = interaction.fields.getTextInputValue('member_id');
+        
+        try {
+          // التحقق من وجود العضو في السيرفر أولاً
+          const memberToAdd = await interaction.guild.members.fetch(memberId).catch(() => null);
+          if (!memberToAdd) {
+            return interaction.reply({
+              content: '❌ العضو غير موجود في السيرفر',
+              flags: MessageFlags.Ephemeral
+            });
+          }
+
+          await interaction.channel.permissionOverwrites.edit(memberId, {
+            ViewChannel: true,
+            SendMessages: true,
+            ReadMessageHistory: true
+          });
+          
+          await interaction.reply({
+            content: `✅ تمت إضافة العضو <@${memberId}> للتذكرة`,
+            flags: MessageFlags.Ephemeral
+          });
+          
+          await createLog('تم إضافة عضو للتذكرة', interaction.member, `<@${memberId}>`, {
+            extra: `التذكرة: ${interaction.channel.name}`
+          });
+        } catch (err) {
+          await interaction.reply({
+            content: '❌ ماقدرت أضيف العضو، تأكد من الآيدي',
+            flags: MessageFlags.Ephemeral
+          });
+        }
+      }
+
+      if (interaction.customId === 'modal_create_section') {
+        const title = interaction.fields.getTextInputValue('section_title');
+        const role = interaction.fields.getTextInputValue('section_role');
+        const description = interaction.fields.getTextInputValue('section_description');
+        const category = interaction.fields.getTextInputValue('section_category');
+        const number = interaction.fields.getTextInputValue('section_number');
+
+        if (!db.sections) db.sections = {};
+
+        if (db.sections[number]) {
+          return await interaction.reply({ content: `❌ فيه قسم موجود بالفعل برقم \`${number}\``, flags: MessageFlags.Ephemeral });
+        }
+
+        // التحقق من وجود الرول والكاتجوري
+        try {
+          const roleCheck = await interaction.guild.roles.fetch(role).catch(() => null);
+          if (!roleCheck) {
+            return await interaction.reply({ 
+              content: '❌ الرول المحدد غير موجود', 
+              flags: MessageFlags.Ephemeral 
+            });
+          }
+
+          const categoryCheck = await interaction.guild.channels.fetch(category).catch(() => null);
+          if (!categoryCheck) {
+            return await interaction.reply({ 
+              content: '❌ الكاتجوري المحدد غير موجود', 
+              flags: MessageFlags.Ephemeral 
+            });
+          }
+
+          db.sections[number] = { title, role, description, category };
+          saveData();
+
+          await interaction.reply({ 
+            content: `✅ تم إنشاء القسم \`${title}\` بنجاح\n📁 الكاتجوري: \`${category}\``, 
+            flags: MessageFlags.Ephemeral 
+          });
+          await createLog('تم إنشاء قسم', interaction.member, title, {
+            extra: `الرقم: ${number} | الرول: <@&${role}>`
+          });
+        } catch (err) {
+          console.error('خطأ في إنشاء القسم:', err);
+          await interaction.reply({ 
+            content: '❌ حدث خطأ أثناء إنشاء القسم', 
+            flags: MessageFlags.Ephemeral 
+          });
+        }
+      }
+
+      if (interaction.customId === 'modal_delete_section') {
+        const number = interaction.fields.getTextInputValue('delete_section_number');
+
+        if (db.sections && db.sections[number]) {
+          const sectionTitle = db.sections[number].title;
+          delete db.sections[number];
+          saveData();
+          await interaction.reply({ 
+            content: `🗑️ تم حذف القسم \`${sectionTitle}\` (رقم ${number})`, 
+            flags: MessageFlags.Ephemeral 
+          });
+          await createLog('تم حذف قسم', interaction.member, sectionTitle, {
+            extra: `الرقم: ${number}`
+          });
+        } else {
+          await interaction.reply({ 
+            content: '❌ مالقيت قسم بهذا الرقم', 
+            flags: MessageFlags.Ephemeral 
+          });
+        }
+      }
+
+      if (interaction.customId === 'modal_edit_message') {
+        const content = interaction.fields.getTextInputValue('new_message_content');
+        const banner = interaction.fields.getTextInputValue('server_banner');
+        const logo = interaction.fields.getTextInputValue('server_logo');
+        const color = interaction.fields.getTextInputValue('embed_color');
+
+        if (content) ticketData.messageContent = content;
+        if (banner) ticketData.serverBanner = banner;
+        if (logo) ticketData.serverLogo = logo;
+        if (color) ticketData.embedColor = color;
+
+        saveData();
+
+        await interaction.reply({ 
+          content: '✅ تم تحديث إعدادات التذاكر:\n' +
+                  (content ? '✏️ الوصف\n' : '') +
+                  (banner ? '🖼️ البنر\n' : '') +
+                  (logo ? '🏷️ الشعار\n' : '') +
+                  (color ? '🎨 اللون\n' : ''),
+          flags: MessageFlags.Ephemeral
+        });
+        
+        await createLog('تم تعديل واجهة التذاكر', interaction.member, null, {
+          extra: `${content ? 'الوصف' : ''}${banner ? ' + البنر' : ''}${logo ? ' + الشعار' : ''}${color ? ' + اللون' : ''}`
+        });
+      }
+    }
+  } catch (error) {
+    console.error('خطأ في معالجة الأمر:', error);
+    if (interaction.isRepliable()) {
+      await interaction.reply({ 
+        content: '❌ صار خطأ أثناء تنفيذ طلبك', 
+        flags: MessageFlags.Ephemeral 
+      }).catch(console.error);
+    }
+  }
 });
-// --- KEEP BOT ALIVE SERVER ---
-const express = require('express');
-const app = express();
 
-app.get("/", (req, res) => {
-  res.send("✅ Bot is Alive and Running!");
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌍 Web server is running on port ${PORT}`));
-// --- END SERVER SECTION ---
-
+client.login(token).catch(console.error);
